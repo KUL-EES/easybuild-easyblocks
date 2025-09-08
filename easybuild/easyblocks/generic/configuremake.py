@@ -37,6 +37,7 @@ i.e. configure/make/make install, implemented as an easyblock.
 @author: Sebastian Achilles (Juelich Supercomputing Centre)
 """
 import os
+import tempfile
 import re
 import stat
 from datetime import datetime
@@ -48,7 +49,7 @@ from easybuild.framework.easyconfig import CUSTOM
 from easybuild.tools.build_log import print_warning, EasyBuildError
 from easybuild.tools.config import source_paths, build_option, ERROR, IGNORE, WARN
 from easybuild.tools.filetools import CHECKSUM_TYPE_SHA256, adjust_permissions, compute_checksum, download_file
-from easybuild.tools.filetools import read_file, remove_file
+from easybuild.tools.filetools import change_dir, read_file, remove_file
 from easybuild.tools.run import run_shell_cmd
 from easybuild.tools.utilities import nub
 
@@ -272,6 +273,22 @@ class ConfigureMake(EasyBlock):
 
         return build_type, host_type
 
+    def check_readiness_step(self):
+        run_shell_cmd(f'while mountpoint -q {self.builddir}; do fusermount -u {self.builddir}; done')
+        super().check_readiness_step()
+
+    def patch_step(self, beginpath=None, patches=None):
+        if not self.cfg.get('sources'):
+            assert(not self.build_in_installdir)
+            assert(not len(self.src))
+            upper_dir = tempfile.mkdtemp()
+            work_dir = tempfile.mkdtemp()
+            run_shell_cmd(f'fuse-overlayfs -o lowerdir={"."},upperdir={upper_dir},workdir={work_dir} {self.builddir}')
+            self.src.append({'finalpath': self.builddir})
+        super().patch_step(beginpath, patches)
+        if not self.cfg.get('sources'):
+            self.src.pop()
+
     def configure_step(self, cmd_prefix=''):
         """
         Configure step
@@ -417,3 +434,9 @@ class ConfigureMake(EasyBlock):
         res = run_shell_cmd(cmd)
 
         return res.output
+
+    def cleanup_step(self):
+        if not self.cfg.get('sources') and (build_option('cleanup_builddir') or build_option('cleanup_tmpdir')):
+            change_dir(self.orig_workdir)
+            run_shell_cmd(f"fusermount -u {self.builddir}")
+        super().cleanup_step()
